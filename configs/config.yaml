@@ -1,0 +1,69 @@
+environment:
+  timestep_minutes: 15
+  max_power_kw: 7.0
+  target_temp: 25.0
+
+physics:
+  pv_capacity_kw: 5.0          # Công suất đỉnh hệ thống PV (kW)
+  thermal:
+    thermal_resistance: 2.0    # R: K/W
+    thermal_capacitance: 5.0   # C: kWh/K
+    hvac_efficiency: 2.5       # Hệ số COP định mức
+    # --- Phase 4: Advanced Thermal ---
+    window_area_m2: 6.0        # Tổng diện tích cửa kính (m²)
+    shgc: 0.25                 # Solar Heat Gain Coefficient (cửa low-e)
+    occupancy_heat_kw: 0.1     # Nhiệt tỏa ra mỗi người (kW/người)
+    cop_degradation_k: 0.03    # Hệ số suy giảm COP theo ΔT
+    cop_t_ref: 10.0            # ΔT tham chiếu cho COP phi tuyến (°C)
+
+  battery:
+    capacity_kwh: 10.0
+    charge_efficiency: 0.95
+    discharge_efficiency: 0.95
+    max_charge_power_kw: 3.0
+    max_discharge_power_kw: 3.0
+    min_soc: 0.1
+    max_soc: 1.0
+
+ppo:
+  learning_rate: 0.0003
+  gamma: 0.99
+  batch_size: 2048
+  ent_coef: 0.01
+  n_steps: 2048
+  clip_range: 0.2
+
+pricing:
+  tou_normal: 1734.0   # VNĐ/kWh
+  tou_off_peak: 1133.0 # VNĐ/kWh
+  tou_peak: 3171.0     # VNĐ/kWh
+  tier_3_flat: 2271.0  # VNĐ/kWh (nhà trọ)
+
+reward:
+  w_eco: 1.0
+  w_peak: 2.0
+  w_comfort: 10.0
+  w_task: 10.0
+
+stochastic:
+  use_real_citylearn_data: true
+  sensor_noise_sigma: 0.2
+  degradation_weights:
+    alpha: 0.5   # Phạt hao mòn do dòng điện sạc/xả lớn
+    beta: 1.0    # Phạt hao mòn do căng SOC (neo ở 50%)
+
+training:
+  seed: 42
+  num_envs: 8
+  total_timesteps: 100000
+  checkpoint_freq: 10000
+
+# --- Phase 5: Forecasting System ---
+forecast:
+  pv_noise_sigma: 80.0       # W/kW — sai số dự báo PV
+  load_noise_sigma: 0.4      # kW  — sai số dự báo tải
+  occ_noise_sigma: 0.05      # xác suất — sai số dự báo occupancy
+  # Để trống = dùng statistical fallback (không cần pre-training)
+  pv_model_path: ""
+  load_model_path: ""
+  occ_model_path: ""
