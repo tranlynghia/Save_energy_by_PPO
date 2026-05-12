@@ -1,20 +1,24 @@
-# Physics-Informed Smart Home HEMS using PPO
+## 🌟 Tính năng nổi bật (v4.0 Senior Refactor)
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Gymnasium](https://img.shields.io/badge/Gymnasium-0.28+-green.svg)](https://gymnasium.farama.org/)
-[![Stable-Baselines3](https://img.shields.io/badge/SB3-2.0+-orange.svg)](https://stable-baselines3.readthedocs.io/)
-
-Hệ thống quản lý năng lượng thông minh (HEMS) ứng dụng Học tăng cường sâu (Deep Reinforcement Learning) để tối ưu hóa chi phí điện năng, duy trì sự thoải mái nhiệt và kéo dài tuổi thọ pin lưu trữ.
+*   **Physically Consistent Power Balance**: Tính toán công suất tại AC Bus, tách bạch hao hụt sạc/xả của Pin.
+*   **Centralized Multi-Objective Reward**: Hệ thống phần thưởng hợp nhất, chống Reward Hacking và lạm dụng thiết bị.
+*   **Battery Health Protection**: Tích hợp hình phạt cho việc xả sâu, sạc quá đầy và đảo chiều sạc/xả liên tục (Anti-chattering).
+*   **Quadratic Comfort Zone**: Duy trì nhiệt độ 22°C-26°C với hình phạt bậc hai và các ràng buộc cứng (Hard constraints).
+*   **Deep Telemetry Logging**: Ghi nhận toàn bộ các dòng nhiệt (q_ext, q_cool), COP, và trạng thái Clipping của reward.
 
 ---
 
-## 🌟 Tính năng nổi bật (Research-Grade)
+## 📂 Cấu trúc Reward (v4.0)
 
-*   **Physics-Informed Environment**: Mô phỏng nhiệt động lực học tòa nhà (RC Model) với chỉ số COP biến thiên theo nhiệt độ môi trường thực tế.
-*   **Battery Arbitrage Strategy**: Agent học được cách "buôn điện" — sạc khi giá rẻ (hoặc có nắng) và xả khi giá cao (Peak hours) để tối ưu hóa lợi nhuận.
-*   **Advanced PPO Pipeline**: Tích hợp `VecNormalize` cho cả Observation và Reward, giúp hội tụ nhanh và ổn định trong môi trường đa mục tiêu.
-*   **20-Dimensional State Space**: Bao gồm các dự báo (Forecast) về PV, phụ tải và **giá điện tương lai** (6h, 12h, 24h).
-*   **Visual Analytics v3.0**: Hệ thống báo cáo tự động với 7 biểu đồ phân tích chuyên sâu (Power Balance, Action-Price correlation, Cumulative Reward Breakdown, v.v.)
+Hàm phần thưởng tổng quát được tính toán tập trung tại `utils/reward.py`:
+
+$$Reward = r_{eco} + r_{comfort} + r_{deg} + r_{soc} + r_{smooth} + r_{switch} + r_{peak} + r_{terminal}$$
+
+*   **r_eco**: Chi phí tiền điện thực tế (không dùng r_arb để tránh hacking).
+*   **r_comfort**: Phạt bậc hai nếu $T_{in} \notin [22, 26]$. Phạt nặng nếu bão hòa nhiệt (>27°C, <21°C).
+*   **r_soc**: Ép pin hoạt động trong vùng tối ưu (30% - 80%).
+*   **r_switch**: Phạt đảo chiều sạc/xả liên tục (Chattering control).
+*   **r_smooth**: Phạt độ dốc thay đổi hành động trên không gian chuẩn hóa.
 
 ---
 

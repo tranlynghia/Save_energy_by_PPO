@@ -64,7 +64,7 @@ def run_training():
 
     SEED        = 42
     NUM_ENVS    = 4
-    TOTAL_STEPS = 300_000
+    TOTAL_STEPS = 500_000
 
     set_global_seed(SEED)
     print(f"[0/3] Seed = {SEED}")
@@ -105,7 +105,7 @@ def run_training():
         gamma=0.995,
         gae_lambda=0.95,
         clip_range=0.2,
-        ent_coef=0.05,          # Tăng Entropy (PRIORITY 3)
+        ent_coef=0.1,          # Đẩy mạnh Entropy để tránh Policy Collapse
         vf_coef=0.5,
         max_grad_norm=0.5,
         policy_kwargs=dict(net_arch=[256, 256]),
