@@ -9,12 +9,19 @@ Tài liệu này mô tả chi tiết các lý thuyết vật lý, sự tương t
 Hệ thống được mô hình hóa theo chuẩn `gymnasium.Env` phục vụ cho mô hình học tăng cường. Mỗi bước thời gian (timestep) `dt` tương ứng với 15 phút (0.25h).
 
 ### Dữ liệu (Data Pipeline)
-Toàn bộ dữ liệu được load, scale và giả lập từ `DataManager`:
+Toàn bộ dữ liệu được load, scale và xử lý từ `DataManager` kết hợp với `EPWWeatherLoader`:
 - **Base Load (Tải điện sinh hoạt)**: Scale từ tập dữ liệu tòa nhà thương mại xuống mức Smart Home bằng hệ số `1/40`.
-- **Nhiệt độ ngoài trời (Outdoor Temperature)**: Giả lập quỹ đạo hình sin với công thức:  
-  $T_{out} = 30 + 5 \sin \left( \frac{2\pi (h - 9)}{24} \right) + N(0, 0.3)$  
-  (Chạm đáy 25°C vào mờ sáng và đỉnh 35°C lúc 15h chiều).
-- **GHI & PV Power (Điện mặt trời)**: Quang thông `GHI` giả lập theo hình chuông từ 6h đến 18h. Công suất PV được tính toán dựa trên hệ số suy hao 0.85 cho dàn pin 5kWp.
+- **Dữ liệu thời tiết thực tế (EPW)**: Sử dụng file EnergyPlus Weather (`.epw`) của Hà Nội (IWEC) làm nguồn dữ liệu chính.
+  - **Outdoor Temperature**: Lấy từ cột Dry Bulb Temperature thực tế, phản ánh đúng các đợt nóng/lạnh của Hà Nội.
+  - **Solar Irradiance (GHI, DNI, DHI)**: Sử dụng bức xạ thực tế thay vì giả lập lý tưởng, giúp mô phỏng mây che và biến động thời tiết.
+  - **Humidity & Wind Speed**: Được tích hợp để tăng độ chính xác cho mô hình Infiltration và Thermal Comfort.
+- **PV Power (Điện mặt trời)**: Sử dụng mô hình vật lý đầy đủ dựa trên bức xạ thực tế và nhiệt độ:
+  - **Cell Temperature ($T_{cell}$)**: Tính theo mô hình NOCT (Nominal Operating Cell Temperature):
+    $T_{cell} = T_{ambient} + \frac{NOCT - 20}{800} \cdot GHI$
+  - **Temperature Derating ($\eta_{temp}$)**: Hiệu suất giảm khi nhiệt độ cell tăng:
+    $\eta_{temp} = 1 - \beta \cdot (T_{cell} - 25)$ (với $\beta \approx 0.004/°C$)
+  - **AC Output ($P_{ac}$)**:
+    $P_{ac} = P_{nom} \cdot \frac{GHI}{1000} \cdot \eta_{temp} \cdot \eta_{inverter} \cdot f_{shading}$
 - **Giá điện (TOU)**: Áp dụng bảng giá sản xuất kinh doanh < 6kV năm 2026:
   - Off-peak (00:00 - 06:00): 1.300 VNĐ
   - Peak (17:30 - 22:30): 3.640 VNĐ

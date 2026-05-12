@@ -25,7 +25,14 @@ import os
 import numpy as np
 import pandas as pd
 from typing import Dict, Optional
+from env.weather.weather_loader import EPWWeatherLoader
+from env.physics.pv_model import calculate_pv_physics
+import yaml
 
+# Load config for PV model parameters
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "configs", "config.yaml")
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+    _CONFIG = yaml.safe_load(f)
 
 # ============================================================
 # SCALE FACTOR — WHY 1/40?
@@ -60,14 +67,9 @@ class DataManager:
 
     Responsibilities:
     -   Load and scale CityLearn Building 3 data to smart home magnitude.
-    -   Generate realistic outdoor temperature via sinusoidal model.
+    -   Extract meteorological data from EPW files (Hanoi IWEC).
     -   Build look-ahead forecasts (6h, 12h, 24h) without data leakage.
     -   Provide step-level data access with safe boundary handling.
-
-    Args:
-        csv_path: Absolute path to building_3_load.csv.
-                  If None, searches relative to this file's location.
-        scale_factor: Physical scaling coefficient. Default = 1/40.
     """
 
     # CSV column names (CityLearn Building 3 format)
@@ -84,120 +86,102 @@ class DataManager:
     def __init__(
         self,
         csv_path: Optional[str] = None,
+        epw_path: Optional[str] = None,
         scale_factor: float = SCALE_FACTOR,
     ) -> None:
         self.scale_factor = scale_factor
 
-        # --- Locate the CSV file ---
+        here = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.abspath(os.path.join(here, "..", ".."))
+
+        # --- Locate Load Data ---
         if csv_path is None:
-            # __file__ = project/env/data/data_manager.py
-            # Go up 2 levels: env/data/ → env/ → project/
-            here = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.abspath(os.path.join(here, "..", ".."))
-            csv_path = os.path.join(
-                project_root, "data", "real_world", "building_3_load.csv"
-            )
+            csv_path = os.path.join(project_root, "data", "real_world", "building_3_load.csv")
+
+        # --- Locate Weather Data ---
+        if epw_path is None:
+            epw_path = os.path.join(project_root, "data", "real_world", "VNM_Hanoi.488200_IWEC.epw")
 
         if not os.path.exists(csv_path):
-            raise FileNotFoundError(
-                f"[DataManager] Dataset not found at: {csv_path}\n"
-                "Place building_3_load.csv in project/data/real_world/"
-            )
+            raise FileNotFoundError(f"Load data not found at {csv_path}")
 
         raw = pd.read_csv(csv_path)
+        
+        # Load Weather
+        self.weather_loader = None
+        if os.path.exists(epw_path):
+            self.weather_loader = EPWWeatherLoader(epw_path)
+        
         self._df = self._build_pipeline(raw)
         self.max_steps: int = len(self._df)
 
-    # ------------------------------------------------------------------
-    # PRIVATE: Build the full processed DataFrame once at init
-    # ------------------------------------------------------------------
     def _build_pipeline(self, raw: pd.DataFrame) -> pd.DataFrame:
         df = raw.copy()
         n = len(df)
 
-        # ============================================================
-        # STEP 1: PHYSICAL SCALE-DOWN
-        # ============================================================
+        # 1. Scale Load Data
         df["equipment_load_kw"] = df[self.COL_EQUIP]   * self.scale_factor
         df["cooling_load_kw"]   = df[self.COL_COOLING] * self.scale_factor
         df["dhw_load_kw"]       = df[self.COL_DHW]     * self.scale_factor
         df["heating_load_kw"]   = df[self.COL_HEATING] * self.scale_factor
-
-        df["base_load_kw"] = (
-            df["equipment_load_kw"]
-            + df["dhw_load_kw"]
-            + df["heating_load_kw"]
-        )
+        df["base_load_kw"] = df["equipment_load_kw"] + df["dhw_load_kw"] + df["heating_load_kw"]
 
         for col in ["equipment_load_kw", "cooling_load_kw", "dhw_load_kw", "base_load_kw"]:
             df[col] = df[col].clip(lower=0.0)
 
-        # ============================================================
-        # STEP 2: OUTDOOR TEMPERATURE & GHI (REAL EPW OR SYNTHETIC)
-        # ============================================================
-        hours = np.arange(n) % 24  # 0-23 cycling hourly
-        
-        here = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.abspath(os.path.join(here, "..", ".."))
-        epw_path = os.path.join(project_root, "data", "real_world", "VNM_Hanoi.488200_IWEC.epw")
-        
-        has_epw = False
-        if os.path.exists(epw_path):
-            try:
-                # EPW data starts at line 9 (index 8)
-                epw_df = pd.read_csv(epw_path, skiprows=8, header=None)
-                if len(epw_df) >= n:
-                    # Col 6: Dry Bulb Temp, Col 13: Global Horizontal Radiation
-                    df["outdoor_temp"] = epw_df.iloc[:n, 6].values.astype(float)
-                    df["ghi_w_m2"] = epw_df.iloc[:n, 13].values.astype(float)
-                    df["weather_source"] = "Hanoi EPW Real Weather"
-                    has_epw = True
-            except Exception as e:
-                print(f"[DataManager] Warning: Could not load EPW file ({e}).")
-                
-        if not has_epw:
+        # 2. Integrate Weather Data
+        if self.weather_loader:
+            weather_df = self.weather_loader.get_weather_series(n)
+            df["outdoor_temp"] = weather_df["outdoor_temp"].values
+            df["ghi_w_m2"] = weather_df["ghi"].values
+            df["dni_w_m2"] = weather_df["dni"].values
+            df["dhi_w_m2"] = weather_df["dhi"].values
+            df["humidity"] = weather_df["humidity"].values
+            df["wind_speed"] = weather_df["wind_speed"].values
+            df["weather_source"] = "Hanoi EPW Real Weather"
+        else:
+            # Fallback to synthetic
+            hours = np.arange(n) % 24
             noise = np.random.normal(0, 0.3, n)
-            outdoor_temp = 30.0 + 5.0 * np.sin(2 * np.pi * (hours - 9.0) / 24.0) + noise
-            df["outdoor_temp"] = np.clip(outdoor_temp, 22.0, 38.0)
-            
-            ghi = np.zeros(n)
-            daylight_mask = (hours >= 6) & (hours <= 18)
-            ghi[daylight_mask] = 900.0 * np.sin(np.pi * (hours[daylight_mask] - 6.0) / 12.0)
-            df["ghi_w_m2"] = ghi
+            df["outdoor_temp"] = 30.0 + 5.0 * np.sin(2 * np.pi * (hours - 9.0) / 24.0) + noise
+            df["ghi_w_m2"] = 900.0 * np.sin(np.pi * (np.clip(hours, 6, 18) - 6.0) / 12.0)
+            df["dni_w_m2"] = df["ghi_w_m2"] * 0.8
+            df["dhi_w_m2"] = df["ghi_w_m2"] * 0.2
+            df["humidity"] = 70.0 + 10.0 * np.sin(2 * np.pi * hours / 24.0)
+            df["wind_speed"] = 2.0 + np.random.normal(0, 0.5, n)
             df["weather_source"] = "Demo weather profile"
 
-        # ============================================================
-        # STEP 2.5: PV MODEL
-        # ============================================================
-        pv_capacity_kw = 5.0
-        pv_derate_factor = 0.85
-        pv_kw = pv_capacity_kw * (df["ghi_w_m2"] / 1000.0) * pv_derate_factor
-        df["pv_kw"] = pv_kw.clip(lower=0.0, upper=pv_capacity_kw)
+        # 3. PV Model (Physical)
+        pv_ac_list = []
+        pv_cell_temp_list = []
+        
+        for idx in range(n):
+            ghi = df["ghi_w_m2"].iloc[idx]
+            out_t = df["outdoor_temp"].iloc[idx]
+            pv_info = calculate_pv_physics(ghi, out_t, _CONFIG)
+            pv_ac_list.append(pv_info["pv_ac_kw"])
+            pv_cell_temp_list.append(pv_info["pv_cell_temp"])
+            
+        df["pv_kw"] = np.array(pv_ac_list, dtype=np.float32)
+        df["pv_cell_temp"] = np.array(pv_cell_temp_list, dtype=np.float32)
 
-        # ============================================================
-        # STEP 3: ELECTRICITY PRICING (TIME-OF-USE)
-        # ============================================================
+        # 4. Electricity Pricing
+        hours = np.arange(n) % 24
         price = np.full(n, PRICE_NORMAL)
-        # Off-peak: 00:00 - 06:00 (hours 0 to 5)
         price[(hours >= 0) & (hours < 6)] = PRICE_OFF_PEAK
-        # Peak: 17:30 - 22:30 -> Approx: hours 18 to 22
         price[(hours >= 18) & (hours <= 22)] = PRICE_PEAK
         df["price_vnd_kwh"] = price
 
-        # ============================================================
-        # STEP 4: TIME FEATURES (PERIODIC ENCODING FOR PPO)
-        # ============================================================
+        # 5. Time Features
         df["hour_sin"] = np.sin(2 * np.pi * hours / 24.0)
         df["hour_cos"] = np.cos(2 * np.pi * hours / 24.0)
         df["hour"] = hours
-        
-        # ============================================================
-        # STEP 5: LOOK-AHEAD FORECASTS (NO LEAKAGE)
-        # ============================================================
+
+        # 6. Forecasts
         for h in [1, 6, 12, 24]:
             df[f"pv_fc_{h}h"]    = df["pv_kw"].shift(-h).bfill().astype(np.float32)
             df[f"load_fc_{h}h"]  = df["base_load_kw"].shift(-h).bfill().astype(np.float32)
-            df[f"outdoor_temp_fc_{h}h"]  = df["outdoor_temp"].shift(-h).bfill().astype(np.float32)
+            df[f"temp_fc_{h}h"]  = df["outdoor_temp"].shift(-h).bfill().astype(np.float32)
             df[f"price_fc_{h}h"] = df["price_vnd_kwh"].shift(-h).bfill().astype(np.float32)
 
         float_cols = df.select_dtypes(include=["float64"]).columns
@@ -206,38 +190,34 @@ class DataManager:
         return df.reset_index(drop=True)
 
     def get_step_data(self, step: int) -> Dict[str, float]:
-        """
-        Return all environment data for a given timestep.
-        """
         idx = int(np.clip(step, 0, self.max_steps - 1))
         row = self._df.iloc[idx]
 
-        return {
+        data = {
             "equipment_load_kw": float(row["equipment_load_kw"]),
             "cooling_load_kw":   float(row["cooling_load_kw"]),
             "dhw_load_kw":       float(row["dhw_load_kw"]),
             "base_load_kw":      float(row["base_load_kw"]),
             "pv_kw":             float(row["pv_kw"]),
+            "pv_cell_temp":      float(row.get("pv_cell_temp", 25.0)),
             "outdoor_temp":      float(row["outdoor_temp"]),
             "ghi_w_m2":          float(row["ghi_w_m2"]),
-            "indoor_humidity":   float(row.get(self.COL_HUMIDITY, 60.0)),
+            "dni_w_m2":          float(row.get("dni_w_m2", 0.0)),
+            "dhi_w_m2":          float(row.get("dhi_w_m2", 0.0)),
+            "humidity":          float(row.get("humidity", 60.0)),
+            "wind_speed":        float(row.get("wind_speed", 2.0)),
             "price_vnd_kwh":     float(row["price_vnd_kwh"]),
             "hour":              int(row["hour"]),
             "hour_sin":          float(row["hour_sin"]),
             "hour_cos":          float(row["hour_cos"]),
-            "month":             int(row.get(self.COL_MONTH, 1)),
             "weather_source":    row["weather_source"],
-            "pv_fc_6h":          float(row["pv_fc_6h"]),
-            "pv_fc_12h":         float(row["pv_fc_12h"]),
-            "pv_fc_24h":         float(row["pv_fc_24h"]),
-            "load_fc_6h":        float(row["load_fc_6h"]),
-            "load_fc_12h":       float(row["load_fc_12h"]),
-            "load_fc_24h":       float(row["load_fc_24h"]),
-            "outdoor_temp_fc_1h":float(row["outdoor_temp_fc_1h"]),
-            "outdoor_temp_fc_6h":float(row["outdoor_temp_fc_6h"]),
-            "outdoor_temp_fc_12h":float(row["outdoor_temp_fc_12h"]),
-            "outdoor_temp_fc_24h":float(row["outdoor_temp_fc_24h"]),
-            "price_fc_6h":       float(row["price_fc_6h"]),
-            "price_fc_12h":      float(row["price_fc_12h"]),
-            "price_fc_24h":      float(row["price_fc_24h"]),
         }
+        
+        # Add forecasts
+        for h in [1, 6, 12, 24]:
+            data[f"pv_fc_{h}h"] = float(row[f"pv_fc_{h}h"])
+            data[f"load_fc_{h}h"] = float(row[f"load_fc_{h}h"])
+            data[f"temp_fc_{h}h"] = float(row[f"temp_fc_{h}h"])
+            data[f"price_fc_{h}h"] = float(row[f"price_fc_{h}h"])
+            
+        return data

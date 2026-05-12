@@ -103,55 +103,53 @@ def run_episode(env, agent, num_steps: int = 672, seed: int = 42) -> pd.DataFram
 
         next_obs, reward, terminated, truncated, info = env.step(action)
 
-        grid_kw     = info.get("grid_import_kw", 0.0)
-        net_load    = info.get("net_load", 0.0)
+        grid_import_kw = info.get("grid_import_kw", 0.0)
+        grid_export_kw = info.get("grid_export_kw", 0.0)
+        net_load       = info.get("net_load_kw", 0.0)
+        base_load      = info.get("base_load_kw", 0.0)
         
         outdoor_temp = info.get("outdoor_temp")
         if outdoor_temp is None:
-            # Fallback to unwrapped data_manager
-            # Note: _data_step has already advanced by 1 in step(), so use _data_step - 1
-            # But the user instruction says get_step_data(env.unwrapped._data_step). Let's be safe.
             try:
                 data_step = env.unwrapped._data_step - 1
                 outdoor_temp = env.unwrapped.data_manager.get_step_data(data_step)["outdoor_temp"]
             except Exception:
-                outdoor_temp = 25.0 + 5.0 * np.sin(step * np.pi / 48) # fallback demo weather
+                outdoor_temp = 25.0
                 
-        physics = info.get("physics", {})
-
         records.append({
             "step":             step,
             "reward":           reward,
             "indoor_temp":      info.get("indoor_temp", float("nan")),
             "outdoor_temp":     outdoor_temp,
             "soc":              info.get("soc", float("nan")),
-            "grid_import_kw":   grid_kw,
+            "grid_import_kw":   grid_import_kw,
+            "grid_export_kw":   grid_export_kw,
             "pv_kw":            info.get("pv_kw", 0.0),
+            "pv_to_load":       info.get("pv_to_load", 0.0),
+            "pv_to_battery":    info.get("pv_to_battery", 0.0),
+            "battery_to_load":  info.get("battery_to_load", 0.0),
+            "pv_export":        info.get("grid_export_kw", 0.0),
             "hvac_power_kw":    info.get("hvac_input_kw", 0.0),
             "batt_power_kw":    info.get("batt_power_kw", 0.0),
+            "base_load_kw":     base_load,
             "net_load_kw":      net_load,
             "electricity_cost": info.get("electricity_cost", 0.0),
             "baseline_cost":    info.get("baseline_cost", 0.0),
-            "r_eco":            info.get("r_eco", 0.0),
+            "r_grid":           info.get("r_grid", 0.0),
             "r_saving":         info.get("r_saving", 0.0),
-            "r_comfort_bonus":  info.get("r_comfort_bonus", 0.0),
+            "r_pv_use":         info.get("r_pv_use", 0.0),
+            "r_pv_to_battery":  info.get("r_pv_to_battery", 0.0),
+            "r_battery_use":    info.get("r_battery_use", 0.0),
+            "r_pv_export":      info.get("r_pv_export", 0.0),
             "r_comfort":        info.get("r_comfort", 0.0),
-            "r_severe":         info.get("r_severe", 0.0),
-            "r_soc_bonus":      info.get("r_soc_bonus", 0.0),
-            "r_soc":            info.get("r_soc", 0.0),
-            "r_deg":            info.get("r_deg", 0.0),
+            "r_comfort_bonus":  info.get("r_comfort_bonus", 0.0),
+            "r_severe_hot":     info.get("r_severe_hot", 0.0),
+            "r_severe_cold":    info.get("r_severe_cold", 0.0),
             "r_peak":           info.get("r_peak", 0.0),
-            "r_smooth":         info.get("r_smooth", 0.0),
-            "r_switch":         info.get("r_switch", 0.0),
-            "raw_reward":       info.get("raw_reward", 0.0),
-            "clipped_reward":   info.get("clipped_reward", 0.0),
             "battery_switch":   info.get("battery_switch", 0.0),
-            "action_batt":      float(action[0]),
-            "action_hvac":      float(action[1]),
             "comfort_violation":info.get("comfort_violation", 0.0),
-            "cop":              physics.get("cop", float("nan")),
-            "q_ext_leakage":    physics.get("q_ext_leakage", float("nan")),
-            "q_cool_thermal":   physics.get("q_cool_thermal", float("nan"))
+            "ghi_w_m2":         info.get("ghi_w_m2", 0.0),
+            "weather_source":   info.get("weather_source", "unknown"),
         })
 
         obs = next_obs
@@ -162,75 +160,83 @@ def run_episode(env, agent, num_steps: int = 672, seed: int = 42) -> pd.DataFram
     df["total_cost"] = df["electricity_cost"].cumsum()
     return df
 
+def print_research_summary(df_ppo, df_rule):
+    """Prints a research-grade comparison table."""
+    def compute_metrics(df):
+        n_days = (len(df) * 0.25) / 24.0
+        grid_import_kwh_day = (df["grid_import_kw"].sum() * 0.25) / n_days
+        comfort_vio_rate = (df["comfort_violation"] > 0).mean() * 100
+        avg_temp = df["indoor_temp"].mean()
+        batt_throughput = (df["batt_power_kw"].abs().sum() * 0.25) / n_days
+        
+        pv_sum = df["pv_kw"].sum()
+        export_sum = df["grid_export_kw"].sum()
+        pv_self_ratio = 100 * (1 - export_sum / (pv_sum + 1e-6))
+        
+        total_cost = df["electricity_cost"].sum()
+        
+        return {
+            "Total Cost": f"{total_cost:,.0f} VND",
+            "Grid Import": f"{grid_import_kwh_day:.2f} kWh/day",
+            "Comfort Vio": f"{comfort_vio_rate:.1f} %",
+            "Avg Temp": f"{avg_temp:.2f} °C",
+            "Batt Throughput": f"{batt_throughput:.2f} kWh/day",
+            "PV Self-Cons": f"{pv_self_ratio:.1f} %"
+        }
+
+    ppo_m = compute_metrics(df_ppo)
+    rule_m = compute_metrics(df_rule)
+
+    print("\n" + "="*70)
+    print(f"{'METRIC':<30} | {'PPO AGENT':<15} | {'RULE-BASED':<15}")
+    print("-" * 70)
+    for k in ppo_m.keys():
+        print(f"{k:<30} | {ppo_m[k]:<15} | {rule_m[k]:<15}")
+    print("="*70 + "\n")
 
 def main():
-    print("=" * 55)
-    print("   SMART HOME HEMS — EVALUATION (PPO vs Rule-based)")
-    print("=" * 55)
+    print("=" * 60)
+    print("   HEMS PPO RESEARCH EVALUATION — PERFORMANCE BENCHMARK")
+    print("=" * 60)
 
     TEST_STEPS = 672  # 7 days
     TEST_SEED  = 42
 
-    # --- Environments (same wrapper stack as training) ---
     env_ppo  = make_stable_env(max_episode_steps=TEST_STEPS, random_start=False, seed=TEST_SEED)
     env_rule = make_stable_env(max_episode_steps=TEST_STEPS, random_start=False, seed=TEST_SEED)
 
-    # --- Load PPO model ---
-    model_candidates = [
-        os.path.join(project_dir, "models", "ppo_hems_final.zip"),
-        os.path.join(project_dir, "models", "ppo_smart_home_final.zip"),
-    ]
-    model_path = None
-    for p in model_candidates:
-        if os.path.exists(p):
-            model_path = p
-            break
+    model_path = os.path.join(project_dir, "models", "ppo_hems_final.zip")
+    if not os.path.exists(model_path):
+        # Check alternative
+        alt = os.path.join(project_dir, "models", "ppo_smart_home_final.zip")
+        if os.path.exists(alt): model_path = alt
+        else:
+            print("[Error] Model not found. Run training first.")
+            return
 
-    if model_path is None:
-        print("[LỖI] Không tìm thấy model. Chạy train_ppo.py trước.")
-        return
-
-    print(f"[1/3] Nạp model PPO từ: {model_path}")
+    print(f"[*] Loading PPO Model: {os.path.basename(model_path)}")
     ppo_agent = PPO.load(model_path, env=env_ppo)
-
-    # --- Rule-based agent ---
-    print("[2/3] Khởi tạo Rule-based Agent...")
     rule_agent = HEMSRuleBasedAgent()
 
-    # --- Run evaluations ---
-    print(f"[3/3] Chạy đánh giá ({TEST_STEPS} steps, seed={TEST_SEED})...")
-
-    print("  → PPO Agent...")
+    print(f"[*] Running Evaluation ({TEST_STEPS} steps)...")
     df_ppo = run_episode(env_ppo, ppo_agent, num_steps=TEST_STEPS, seed=TEST_SEED)
-
-    print("  → Rule-based Agent...")
     df_rule = run_episode(env_rule, rule_agent, num_steps=TEST_STEPS, seed=TEST_SEED)
 
-    # --- Summary statistics ---
-    print("\n=== KẾT QUẢ SO SÁNH ===")
-    for name, df in [("PPO", df_ppo), ("Rule-based", df_rule)]:
-        total_cost = df["electricity_cost"].sum()
-        mean_temp  = df["indoor_temp"].mean()
-        mean_soc   = df["soc"].mean()
-        mean_reward = df["reward"].mean()
-        print(f"\n[{name}]")
-        print(f"  Tổng chi phí điện : {total_cost:,.0f} VND")
-        print(f"  Nhiệt độ TB trong : {mean_temp:.2f} °C")
-        print(f"  SoC TB            : {mean_soc:.2f}")
-        print(f"  Reward TB/step    : {mean_reward:.4f}")
+    # Summary table
+    print_research_summary(df_ppo, df_rule)
 
-    # --- Save CSVs ---
+    # Save and Plot
     out_dir = os.path.join(project_dir, "evaluate")
+    os.makedirs(out_dir, exist_ok=True)
     df_ppo.to_csv(os.path.join(out_dir, "eval_ppo.csv"), index=False)
     df_rule.to_csv(os.path.join(out_dir, "eval_rule.csv"), index=False)
-    print(f"\nĐã lưu CSV tại: {out_dir}")
 
-    # --- Plots ---
-    if plot_evaluation_results is not None:
-        print("Đang vẽ biểu đồ phân tích...")
-        plot_evaluation_results(df_ppo, df_rule)
-    else:
-        print("[Bỏ qua biểu đồ] Không tìm thấy plot_metrics.py")
+    if plot_evaluation_results:
+        plot_evaluation_results(df_ppo, df_rule, save_dir=out_dir)
+
+if __name__ == "__main__":
+    main()
+
 
 
 if __name__ == "__main__":

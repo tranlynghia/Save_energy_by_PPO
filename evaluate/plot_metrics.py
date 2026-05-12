@@ -1,358 +1,336 @@
 """
 evaluate/plot_metrics.py
 ========================
-v4.0: Research-Grade Diagnostics & Realism Verification
--------------------------------------------------------
-Bổ sung các biểu đồ kiểm soát "bệnh lý" RL:
-1. Action Distribution (Histogram)
-2. Comfort Violation Stats
-3. Battery Cycle Analysis
-4. Detailed Reward decomposition
+Research-Grade Visualization Suite for PPO HEMS Evaluation.
+Designed for professional reports and research publications.
 """
 
 import os
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 
-# ── Style & Colors ──────────────────────────────────────────────────────────
-plt.style.use("seaborn-v0_8-darkgrid")
+# --- Professional Color Palette ---
 COLORS = {
-    "ppo":      "#2ecc71",
-    "rule":     "#e74c3c",
-    "pv":       "#f1c40f",
-    "batt":     "#27ae60",
-    "grid":     "#c0392b",
-    "charge":   "#3498db",
-    "hvac":     "#8e44ad",
-    "price":    "#e67e22",
-    "total":    "#ecf0f1",
+    "ppo":          "#1f77b4",  # Professional Blue
+    "rule":         "#d62728",  # Professional Red
+    "outdoor":      "#ff7f0e",  # Orange
+    "pv":           "#bcbd22",  # Muted Olive/Yellow
+    "grid":         "#7f7f7f",  # Gray
+    "battery":      "#2ca02c",  # Green
+    "load":         "#9467bd",  # Purple
+    "hvac":         "#8c564b",  # Brown
+    "comfort_zone": "#e1f5fe",  # Very Light Blue
+    "charge":       "#2ecc71",
+    "discharge":    "#e74c3c",
+    "price":        "#f1c40f"
 }
-LW_MAIN = 3.0
-LW_SEC  = 1.8
-FONT_TITLE = dict(fontsize=13, fontweight="bold")
-FONT_LABEL = dict(fontsize=10)
 
-def _save(fig, path: str, title_for_log: str):
-    fig.tight_layout()
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+plt.style.use("seaborn-v0_8-whitegrid")
+plt.rcParams.update({
+    "font.family": "serif",
+    "font.size": 10,
+    "axes.labelsize": 11,
+    "axes.titlesize": 12,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "legend.fontsize": 10,
+    "figure.titlesize": 14,
+    "grid.alpha": 0.3,
+    "grid.linestyle": "--"
+})
+
+def _hours(indices): return indices * 0.25
+
+def _save(fig, path, title):
+    plt.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches='tight')
     plt.close(fig)
-    print(f"  ✓ {title_for_log:45s} → {os.path.basename(path)}")
+    print(f"  [Output] {title:<40} -> {os.path.basename(path)}")
 
-def _hours(steps: np.ndarray) -> np.ndarray:
-    return steps * 0.25
+def _add_annotations(ax, df, behavior_type):
+    """Automatically detects and adds behavioral annotations to plots."""
+    notes = []
+    if behavior_type == "hvac":
+        if (df["hvac_power_kw"] < 0.1).all():
+            notes.append("HVAC Remained OFF")
+        if (df["indoor_temp"] < 20).any():
+            notes.append("Indoor Temp Collapsed")
+    elif behavior_type == "battery":
+        if (df["batt_power_kw"].abs() < 0.05).all():
+            notes.append("Battery Frozen (No Cycling)")
+        if df["soc"].max() < 0.2:
+            notes.append("Low SoC Utilization")
+    elif behavior_type == "pv":
+        if (df.get("r_pv_export", 0) != 0).any() if "r_pv_export" in df.columns else False:
+            notes.append("Significant PV Waste/Export")
+            
+    if notes:
+        text = "\n".join(notes)
+        ax.text(0.02, 0.95, text, transform=ax.transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8), fontsize=9, color='red')
 
-# ─────────────────────────────────────────────────────────────────────────────
-# NEW: Action Distribution (Histogram) — Kiểm tra bão hòa hành động
-# ─────────────────────────────────────────────────────────────────────────────
-def _plot_action_distribution(df_ppo, out_dir: str):
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+# 1. HVAC & Thermal Behavior (Dual Axis)
+def plot_hvac_behavior(df_ppo, out_dir: str):
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+    n = min(192, len(df_ppo)) # Show 2 days
+    time = _hours(np.arange(n))
     
-    # Battery Action Histogram
-    ax1.hist(df_ppo["action_batt"], bins=30, color=COLORS["batt"], alpha=0.7, edgecolor="white")
-    ax1.set_title("Battery Action Distribution (kW)", **FONT_TITLE)
-    ax1.set_xlabel("Charge (+) / Discharge (-) [kW]")
-    ax1.axvline(0, color="black", lw=1, ls="--")
+    # Left Axis: Temperature
+    ax1.plot(time, df_ppo["outdoor_temp"].values[:n], color=COLORS["outdoor"], lw=1.5, ls="--", label="Outdoor Temp")
+    ax1.plot(time, df_ppo["indoor_temp"].values[:n], color=COLORS["ppo"], lw=2, label="PPO Indoor Temp")
+    
+    # Comfort Zone Shading
+    ax1.fill_between(time, 22, 26, color=COLORS["battery"], alpha=0.1, label="Target Comfort (22-26°C)")
+    ax1.axhline(30, color="red", lw=1, ls=":", alpha=0.5, label="Overheat Limit")
+    ax1.axhline(20, color="blue", lw=1, ls=":", alpha=0.5, label="Overcool Limit")
+    
+    ax1.set_ylabel("Temperature (°C)")
+    ax1.set_xlabel("Time (hours)")
+    ax1.set_ylim(15, 40)
+    
+    # Right Axis: HVAC Power
+    ax2 = ax1.twinx()
+    ax2.fill_between(time, df_ppo["hvac_power_kw"].values[:n], 0, color="gray", alpha=0.3, label="HVAC Input (kW)")
+    ax2.set_ylabel("HVAC Power (kW)")
+    ax2.set_ylim(0, 5)
+    
+    # Combine Legends
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right", frameon=True, fontsize=9)
+    
+    _add_annotations(ax1, df_ppo[:n], "hvac")
+    ax1.set_title("HVAC Operation & Thermal Comfort Timeline")
+    _save(fig, os.path.join(out_dir, "behavior_hvac_thermal.png"), "HVAC Behavior Analysis")
 
-    # HVAC Action Histogram
-    ax2.hist(df_ppo["action_hvac"], bins=30, color=COLORS["hvac"], alpha=0.7, edgecolor="white")
-    ax2.set_title("HVAC Input Distribution (kW)", **FONT_TITLE)
-    ax2.set_xlabel("Electrical Input [kW]")
-
-    _save(fig, os.path.join(out_dir, "diag_action_distribution.png"), "Diag — Action Distribution")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# NEW: Comfort & Battery Health Stats (Table/Text)
-# ─────────────────────────────────────────────────────────────────────────────
-def _plot_health_stats(df_ppo, out_dir: str):
-    # 1. Comfort Violations
-    temp = df_ppo["indoor_temp"].values
-    vio_hot  = np.sum(temp > 26.0) * 0.25  # hours
-    vio_cold = np.sum(temp < 22.0) * 0.25
-    total_hours = len(temp) * 0.25
-    pct_vio = (vio_hot + vio_cold) / total_hours * 100
-
-    # 2. Battery Stress (Equivalent Cycles)
-    # Total energy throughput / (2 * capacity)
-    throughput = np.sum(np.abs(df_ppo["batt_power_kw"].values)) * 0.25
-    capacity = 10.0 # kWh
-    eq_cycles = throughput / (2 * capacity)
-
-    # 3. Control Smoothness (Mean Delta Action)
-    smoothness = np.mean(np.abs(np.diff(df_ppo["action_batt"].values)))
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.axis("off")
-    stats_text = (
-        f"🔎 ENVIRONMENT REALISM & RELIABILITY REPORT\n"
-        f"-------------------------------------------\n\n"
-        f"🔴 THERMAL COMFORT:\n"
-        f"   - Total Violation Time: {vio_hot+vio_cold:.1f} hours\n"
-        f"   - Violation Percentage: {pct_vio:.1f}%\n"
-        f"   - Severe Overheating (>27°C): {np.sum(temp > 27.0)*0.25:.1f}h\n\n"
-        f"🔋 BATTERY HEALTH:\n"
-        f"   - 7-Day Energy Throughput: {throughput:.1f} kWh\n"
-        f"   - Equivalent Full Cycles: {eq_cycles:.2f} cycles/week\n"
-        f"   - Estimated Annual Stress: {eq_cycles * 52:.0f} cycles/year\n\n"
-        f"📉 CONTROL STABILITY:\n"
-        f"   - Battery Jitter (Mean ΔAction): {smoothness:.3f} kW/step\n"
-    )
-    ax.text(0.1, 0.5, stats_text, family="monospace", fontsize=11, va="center", bbox=dict(facecolor='white', alpha=0.5))
-    _save(fig, os.path.join(out_dir, "diag_reliability_report.png"), "Diag — Reliability Report")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Biểu đồ 4 — Power Balance (Split)
-# ─────────────────────────────────────────────────────────────────────────────
-def _plot_power_balance(df_ppo, out_dir: str):
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+# 2. PV Flow & Utilization (Stacked Area)
+def plot_pv_flow(df_ppo, out_dir: str):
+    fig, ax = plt.subplots(figsize=(12, 6))
     n = min(192, len(df_ppo))
-    hours = _hours(df_ppo["step"].values[:n])
-
-    pv    = df_ppo["pv_kw"].values[:n]
-    grid  = df_ppo["grid_import_kw"].values[:n]
-    batt_dis = np.clip(df_ppo["batt_power_kw"].values[:n], 0, None)
+    time = _hours(np.arange(n))
     
-    ax1.stackplot(hours, pv, batt_dis, grid, labels=["PV", "Batt Discharge", "Grid"], colors=[COLORS["pv"], COLORS["batt"], COLORS["grid"]], alpha=0.8)
-    ax1.set_title("System Energy Mix (Supplies)", **FONT_TITLE)
+    def _safe(col): return df_ppo[col].values[:n] if col in df_ppo.columns else np.zeros(n)
+    
+    pv_gen = _safe("pv_kw")
+    pv_to_load = _safe("pv_to_load")
+    pv_to_batt = _safe("pv_to_battery")
+    pv_export = _safe("pv_export")
+    
+    ax.stackplot(time, pv_to_load, pv_to_batt, pv_export,
+                 labels=["PV -> Load", "PV -> Battery", "PV Export (Waste)"],
+                 colors=[COLORS["pv"], COLORS["battery"], "#e0e0e0"], alpha=0.8)
+    
+    ax.plot(time, pv_gen, color="black", lw=1, ls="--", label="Total PV Available")
+    
+    ax.set_title("PV Generation & Utilization Flow")
+    ax.set_ylabel("Power (kW)")
+    ax.set_xlabel("Time (hours)")
+    ax.legend(loc="upper right")
+    
+    _add_annotations(ax, df_ppo[:n], "pv")
+    _save(fig, os.path.join(out_dir, "behavior_pv_utilization.png"), "PV Flow Analysis")
+
+# 3. Battery Dispatch Behavior
+def plot_battery_behavior(df_ppo, out_dir: str):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True, gridspec_kw={'height_ratios': [1, 2]})
+    n = min(192, len(df_ppo))
+    time = _hours(np.arange(n))
+    
+    # Top: SoC
+    ax1.plot(time, df_ppo["soc"].values[:n] * 100, color=COLORS["battery"], lw=2, label="Battery SoC")
+    ax1.fill_between(time, df_ppo["soc"].values[:n] * 100, 0, color=COLORS["battery"], alpha=0.1)
+    ax1.set_ylabel("SoC (%)")
+    ax1.set_ylim(0, 105)
     ax1.legend(loc="upper right")
+    
+    # Bottom: Dispatch Power
+    batt_kw = df_ppo["batt_power_kw"].values[:n]
+    charge = np.maximum(0, batt_kw)
+    discharge = np.maximum(0, -batt_kw)
+    
+    ax2.bar(time, charge, width=0.2, color=COLORS["charge"], label="Charging (+)", alpha=0.8)
+    ax2.bar(time, -discharge, width=0.2, color=COLORS["discharge"], label="Discharging (-)", alpha=0.8)
+    
+    ax2.axhline(0, color="black", lw=0.8)
+    ax2.set_ylabel("Power (kW)")
+    ax2.set_xlabel("Time (hours)")
+    ax2.legend(loc="upper right")
+    
+    _add_annotations(ax2, df_ppo[:n], "battery")
+    fig.suptitle("Battery Storage Dispatch Behavior")
+    _save(fig, os.path.join(out_dir, "behavior_battery_dispatch.png"), "Battery Behavior Analysis")
 
-    batt_p = df_ppo["batt_power_kw"].values[:n]
-    soc = df_ppo["soc"].values[:n]
-    ax2.step(hours, batt_p, where="post", color=COLORS["charge"], lw=LW_SEC, label="Battery Power (kW)")
-    ax2.fill_between(hours, batt_p, step="post", alpha=0.2, color=COLORS["charge"])
+# 4. Grid Dependency & Price Awareness
+def plot_grid_analysis(df_ppo, out_dir: str):
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+    n = min(192, len(df_ppo))
+    time = _hours(np.arange(n))
     
-    ax2_soc = ax2.twinx()
-    ax2_soc.plot(hours, soc, color=COLORS["ppo"], lw=LW_MAIN, label="SoC")
-    ax2_soc.set_ylim(0, 1)
-    ax2.set_title("Battery Power & SoC (Control Stability)", **FONT_TITLE)
-    _save(fig, os.path.join(out_dir, "chart4_power_balance.png"), "Chart 4 — Power Balance")
+    def _safe(col): return df_ppo[col].values[:n] if col in df_ppo.columns else np.zeros(n)
+    
+    grid_import = _safe("grid_import_kw")
+    batt_to_load = _safe("battery_to_load")
+    pv_to_load = _safe("pv_to_load")
+    
+    ax1.stackplot(time, pv_to_load, batt_to_load, grid_import,
+                 labels=["PV Direct", "Battery Support", "Grid Import"],
+                 colors=[COLORS["pv"], COLORS["battery"], COLORS["grid"]], alpha=0.7)
+    
+    ax1.set_ylabel("Load Supply Mix (kW)")
+    ax1.set_xlabel("Time (hours)")
+    
+    # Pricing Overlay
+    ax2 = ax1.twinx()
+    if "price_vnd_kwh" in df_ppo.columns:
+        price = df_ppo["price_vnd_kwh"].values[:n]
+    else:
+        h = (np.arange(n) % 96) / 4
+        price = np.where((h >= 17) & (h <= 21), 3500, np.where((h <= 6), 1200, 2000))
+        
+    ax2.step(time, price, color=COLORS["price"], lw=1.5, where='post', label="Electricity Price (VND/kWh)")
+    ax2.set_ylabel("Price (VND/kWh)")
+    
+    # Combine Legends
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
+    
+    ax1.set_title("Grid Dependency & Price-Aware Dispatch Analysis")
+    _save(fig, os.path.join(out_dir, "behavior_grid_dependency.png"), "Grid Dependency Analysis")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# NEW: Reward Decomposition & Scoring (v5.0)
-# ─────────────────────────────────────────────────────────────────────────────
-def _plot_step_reward_decomposition(df_ppo, out_dir: str):
-    n = min(96, len(df_ppo))
-    hours = _hours(np.arange(n))
+# 5. Reward & Penalty Flow
+def plot_reward_flow(df_ppo, out_dir: str):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+    n = min(192, len(df_ppo))
+    time = _hours(np.arange(n))
+    
+    def _safe(col): return df_ppo[col].values[:n] if col in df_ppo.columns else np.zeros(n)
+    
+    # Positive Rewards
+    r_pv_to_batt = _safe("r_pv_to_battery")
+    r_batt_use = _safe("r_battery_use")
+    r_peak_shift = _safe("r_peak_shift")
+    r_self_cons = _safe("r_self_consumption")
+    r_pv_to_load = _safe("r_pv_to_load")
+    
+    ax1.stackplot(time, r_pv_to_load, r_pv_to_batt, r_batt_use, r_peak_shift, r_self_cons,
+                 labels=["PV-to-Load", "PV-to-Batt", "Batt Support", "Peak Shift", "Self-Cons"],
+                 colors=["#ff7f0e", "#bcbd22", "#17a2b8", "#2ca02c", "#2980b9"], alpha=0.8)
+    ax1.plot(time, df_ppo["reward"].values[:n], color="black", lw=1.5, label="Net Reward")
+    ax1.set_title("Reward Flow Analysis (Strategic Drivers)")
+    ax1.set_ylabel("Reward Value")
+    ax1.legend(loc="upper left", bbox_to_anchor=(1, 1))
+    
+    # Penalties (Absolute)
+    p_grid = np.abs(_safe("r_grid"))
+    p_com = np.abs(_safe("r_comfort"))
+    p_pv_waste = np.abs(_safe("r_pv_waste"))
+    p_empty_batt = np.abs(_safe("r_empty_battery"))
+    
+    ax2.stackplot(time, p_grid, p_com, p_pv_waste, p_empty_batt,
+                 labels=["Grid Cost", "Comfort", "PV Waste", "Empty Batt"],
+                 colors=["#e67e22", "#c0392b", "#7f8c8d", "#d3d3d3"], alpha=0.8)
+    ax2.set_title("Penalty Flow Analysis (Strategic Inhibitors)")
+    ax2.set_ylabel("Penalty Magnitude")
+    ax2.legend(loc="upper left", bbox_to_anchor=(1, 1))
+    
+    _save(fig, os.path.join(out_dir, "behavior_reward_decomposition.png"), "Reward Flow Analysis")
 
-    fig, ax = plt.subplots(figsize=(14, 6))
+# 6. Appliance & Battery Schedule Timeline
+def plot_appliance_schedule(df_ppo, out_dir: str):
+    fig, ax = plt.subplots(figsize=(12, 4))
+    n = min(192, len(df_ppo)) # Show up to 48h
+    time = _hours(np.arange(n))
     
-    # Bonuses
-    r_saving = df_ppo.get("r_saving", np.zeros(n)).values[:n]
-    r_comfort_bonus = df_ppo.get("r_comfort_bonus", np.zeros(n)).values[:n]
-    r_soc_bonus = df_ppo.get("r_soc_bonus", np.zeros(n)).values[:n]
+    # Extract data
+    hvac = df_ppo["hvac_power_kw"].values[:n]
+    batt = df_ppo["batt_power_kw"].values[:n]
     
-    # Penalties
-    r_eco = df_ppo.get("r_eco", np.zeros(n)).values[:n]
-    r_comfort = df_ppo.get("r_comfort", np.zeros(n)).values[:n]
-    r_severe = df_ppo.get("r_severe", np.zeros(n)).values[:n]
-    r_deg = df_ppo.get("r_deg", np.zeros(n)).values[:n]
-    r_soc = df_ppo.get("r_soc", np.zeros(n)).values[:n]
-    r_smooth = df_ppo.get("r_smooth", np.zeros(n)).values[:n]
-    r_switch = df_ppo.get("r_switch", np.zeros(n)).values[:n]
+    # 1. HVAC Cooling (Purple)
+    hvac_active = hvac > 0.1
+    ax.fill_between(time, 2.1, 2.9, where=hvac_active, color=COLORS["hvac"], alpha=0.8, label="HVAC Cooling")
     
-    raw_reward = df_ppo.get("raw_reward", np.zeros(n)).values[:n]
-
-    ax.plot(hours, r_saving, label="Saving Bonus", color="green", lw=1.5)
-    ax.plot(hours, r_comfort_bonus, label="Comfort Bonus", color="blue", lw=1.5)
-    ax.plot(hours, r_soc_bonus, label="SoC Bonus", color="cyan", lw=1.5)
+    # 2. Battery Charging (Blue/Green)
+    batt_charge = batt > 0.05
+    ax.fill_between(time, 1.1, 1.9, where=batt_charge, color=COLORS["charge"], alpha=0.8, label="Battery Charge")
     
-    ax.plot(hours, r_eco, label="Eco Penalty", color="orange", lw=1.5, ls="--")
-    ax.plot(hours, r_comfort, label="Comfort Penalty", color="red", lw=1.5, ls="--")
-    ax.plot(hours, r_severe, label="Severe Penalty", color="darkred", lw=1.5, ls=":")
-    ax.plot(hours, r_soc, label="SoC Penalty", color="purple", lw=1.5, ls="--")
-    ax.plot(hours, r_deg, label="Degradation", color="gray", lw=1.5, ls="--")
+    # 3. Battery Discharging (Red)
+    batt_discharge = batt < -0.05
+    ax.fill_between(time, 0.1, 0.9, where=batt_discharge, color=COLORS["discharge"], alpha=0.8, label="Battery Discharge")
     
-    ax.plot(hours, raw_reward, label="Total Step Reward", color="black", lw=2.5)
-
-    ax.set_title("Step Reward Decomposition (Bonuses vs Penalties)", **FONT_TITLE)
+    ax.set_yticks([0.5, 1.5, 2.5])
+    ax.set_yticklabels(["Batt Discharge", "Batt Charge", "HVAC Cooling"])
     ax.set_xlabel("Time (hours)")
-    ax.set_ylabel("Reward Value")
-    ax.legend(loc="upper left", bbox_to_anchor=(1, 1))
-    _save(fig, os.path.join(out_dir, "reward_step_decomposition.png"), "Reward Step Decomposition")
+    ax.set_title("Appliance & Battery Schedule Timeline")
+    ax.set_ylim(0, 3)
+    ax.set_xlim(0, max(time) if n > 0 else 48)
+    
+    # Annotations
+    notes = []
+    if not np.any(hvac_active):
+        notes.append("Warning: HVAC remained OFF")
+    if not np.any(batt_discharge):
+        notes.append("Warning: Battery never discharged")
+        
+    if notes:
+        text = "\n".join(notes)
+        ax.text(0.02, 0.90, text, transform=ax.transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.9), fontsize=10, color='red', fontweight='bold')
+                
+    _save(fig, os.path.join(out_dir, "behavior_schedule_timeline.png"), "Schedule Timeline Analysis")
 
-def _plot_cumulative_penalty_decomposition(df_ppo, out_dir: str):
-    n = min(96, len(df_ppo))
-    hours = _hours(np.arange(n))
-
-    r_eco = df_ppo.get("r_eco", np.zeros(n)).values[:n].cumsum()
-    r_com = df_ppo.get("r_comfort", np.zeros(n)).values[:n].cumsum()
-    r_sev = df_ppo.get("r_severe", np.zeros(n)).values[:n].cumsum()
-    r_deg = df_ppo.get("r_deg", np.zeros(n)).values[:n].cumsum()
-    r_soc = df_ppo.get("r_soc", np.zeros(n)).values[:n].cumsum()
-    r_smooth = df_ppo.get("r_smooth", np.zeros(n)).values[:n].cumsum()
-    r_switch = df_ppo.get("r_switch", np.zeros(n)).values[:n].cumsum()
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(hours, r_eco, color="orange", lw=LW_SEC, label="Grid Cost (r_eco)")
-    ax.plot(hours, r_com, color="red", lw=LW_SEC, label="Comfort (r_comfort)")
-    ax.plot(hours, r_sev, color="darkred", lw=LW_SEC, label="Severe Overheat (r_severe)")
-    ax.plot(hours, r_deg, color="gray", lw=LW_SEC, label="Battery Degradation (r_deg)")
-    ax.plot(hours, r_soc, color="purple", lw=LW_SEC, label="SoC Health (r_soc)")
-    ax.plot(hours, r_switch, color="brown", lw=LW_SEC, label="Battery Switch (r_switch)")
-
-    ax.set_title("Cumulative Penalty Decomposition", **FONT_TITLE)
-    ax.set_xlabel("Time (hours)")
-    ax.set_ylabel("Cumulative Penalty")
-    ax.legend(loc="lower left", ncol=2)
-    _save(fig, os.path.join(out_dir, "reward_cumulative_penalty.png"), "Cumulative Penalty Decomposition")
-
-def _plot_demo_score_breakdown(df_ppo, out_dir: str):
-    n = len(df_ppo)
-    
-    # 1. Comfort Score
-    vio_rate = np.mean(df_ppo.get("comfort_violation", np.zeros(n)).values > 0)
-    comfort_score = 100 * (1 - vio_rate)
-    
-    # 2. Cost Score (Saving Ratio)
-    total_cost = np.sum(df_ppo.get("electricity_cost", np.zeros(n)).values)
-    total_baseline = np.sum(df_ppo.get("baseline_cost", np.full(n, total_cost + 1e-6)).values)
-    saving_ratio = (total_baseline - total_cost) / (total_baseline + 1e-6)
-    cost_score = np.clip(100 * saving_ratio, 0, 100) if saving_ratio > 0 else 0
-    
-    # 3. Battery Score
-    avg_soc = np.mean(df_ppo.get("soc", np.full(n, 0.5)).values)
-    is_healthy = 0.3 <= avg_soc <= 0.8
-    battery_score = 100 if is_healthy else 0
-    
-    # 4. Smooth Score
-    switch_count = np.sum(df_ppo.get("battery_switch", np.zeros(n)).values)
-    norm_switch = np.clip(switch_count / max(1, n * 0.1), 0, 1) # max acceptable 10% switches
-    smooth_score = 100 * (1 - norm_switch)
-    
-    # Final Score
-    final_score = 0.4 * comfort_score + 0.3 * cost_score + 0.2 * battery_score + 0.1 * smooth_score
-    
+# 7. Total Cost (Bar)
+def plot_cost_bar(df_ppo, df_rule, out_dir: str):
     fig, ax = plt.subplots(figsize=(8, 6))
-    categories = ['Comfort Score', 'Cost Score', 'Battery Score', 'Smooth Score']
-    scores = [comfort_score, cost_score, battery_score, smooth_score]
+    final_ppo = df_ppo["electricity_cost"].sum()
+    final_rule = df_rule["electricity_cost"].sum()
     
-    y_pos = np.arange(len(categories))
-    bars = ax.barh(y_pos, scores, align='center', color=['blue', 'green', 'purple', 'orange'])
-    ax.set_yticks(y_pos, labels=categories)
-    ax.set_xlim(0, 100)
-    ax.invert_yaxis()  # labels read top-to-bottom
-    ax.set_xlabel('Score (0-100)')
-    ax.set_title(f"Evaluation Score: {final_score:.1f}/100", **FONT_TITLE)
+    bars = ax.bar(["PPO Agent", "Rule-based"], [final_ppo, final_rule], 
+                  color=[COLORS["ppo"], COLORS["rule"]], alpha=0.8, width=0.6)
+    
+    ax.set_title("Total Cumulative Electricity Cost Comparison")
+    ax.set_ylabel("Cost (VND)")
     
     for bar in bars:
-        width = bar.get_width()
-        label_y = bar.get_y() + bar.get_height() / 2
-        ax.text(width + 2, label_y, s=f'{width:.1f}', va='center', fontweight='bold')
+        h = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2., h + max(100, h*0.02), f'{h:,.0f} VND', ha='center', va='bottom', fontweight='bold')
         
-    _save(fig, os.path.join(out_dir, "demo_score_breakdown.png"), "Demo Score Breakdown")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Standard Plots
-# ─────────────────────────────────────────────────────────────────────────────
-def _plot_soc(df_ppo, df_rule, out_dir: str):
-    fig, ax = plt.subplots(figsize=(13, 4.5))
-    hours = _hours(df_ppo["step"].values)
-    ax.plot(hours, df_ppo["soc"], label="PPO Agent", color=COLORS["ppo"], lw=LW_MAIN)
-    ax.plot(hours, df_rule["soc"], label="Rule-based", color=COLORS["rule"], lw=LW_SEC, ls="--")
-    ax.set_title("SoC Profile (7 Days)", **FONT_TITLE)
-    ax.legend()
-    _save(fig, os.path.join(out_dir, "chart1_soc_profile.png"), "Chart 1 — SoC Profile")
-
-def plot_thermal_comfort_with_weather(df, save_path):
-    time = df["time_hours"].values
-    ppo_indoor = df["ppo_indoor_temp"].values
-    rule_indoor = df["rule_indoor_temp"].values
-    outdoor_temp = df["outdoor_temp"].values
-
-    vio_hot = np.sum(ppo_indoor > 26)
-    vio_cold = np.sum(ppo_indoor < 22)
-    pct_vio = (vio_hot + vio_cold) / len(ppo_indoor) * 100
+    # Calculate savings
+    saving_abs = final_rule - final_ppo
+    saving_pct = (saving_abs / final_rule * 100) if final_rule > 0 else 0
     
-    dt = time[1] - time[0] if len(time) > 1 else 0.25
-    sev_hot_hours = np.sum(ppo_indoor > 27) * dt
-    max_ppo = np.max(ppo_indoor)
-    avg_out = np.mean(outdoor_temp)
-    max_out = np.max(outdoor_temp)
+    subtitle = f"Cost Reduction: {saving_pct:.1f}% ({saving_abs:,.0f} VND saved)"
+    ax.text(0.5, 0.95, subtitle, transform=ax.transAxes, ha='center', fontsize=11, 
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            
+    # Check for comfort exploitation
+    ppo_comfort_vio = (df_ppo["comfort_violation"] > 0).mean()
+    rule_comfort_vio = (df_rule["comfort_violation"] > 0).mean()
     
-    source_val = df["weather_source"].iloc[0] if "weather_source" in df.columns else "Demo profile"
-
-    title = "Thermal Comfort Tracking with Outdoor Temperature — Demo Evaluation"
-    if pct_vio > 50:
-        title = "Thermal Comfort Failure with Outdoor Temperature — PPO Overheats"
-
-    fig, ax1 = plt.subplots(figsize=(14, 6))
-    ax1.set_title(title, **FONT_TITLE)
-    ax1.set_xlabel("Time (hours)", **FONT_LABEL)
-    ax1.set_ylabel("Indoor Temperature (°C)", **FONT_LABEL)
-
-    l1 = ax1.plot(time, ppo_indoor, color="#e74c3c", linewidth=2.8, label="PPO Indoor Temp")[0]
-    l2 = ax1.plot(time, rule_indoor, color="#2ecc71", linestyle="--", linewidth=2.3, label="Rule-based Temp")[0]
-
-    ax2 = ax1.twinx()
-    l3 = ax2.plot(time, outdoor_temp, color="orange", linestyle="-.", linewidth=1.8, alpha=0.8, label="Outdoor Temp")[0]
-    ax2.set_ylabel("Outdoor Temperature (°C)", **FONT_LABEL)
-
-    # Comfort Zone
-    ax1.axhspan(22, 26, color="lightblue", alpha=0.3, label="Comfort Zone 22–26°C")
-    ax1.axhline(22, color="blue", linestyle="--", alpha=0.5)
-    ax1.axhline(26, color="darkblue", linestyle="--", alpha=0.8)
-    l4 = ax1.axhline(27, color="red", linestyle="--", alpha=0.7, label="Severe Overheating >27°C")
-
-    # Highlight vi phạm
-    ax1.fill_between(time, 26, ppo_indoor, where=(ppo_indoor > 26), color="salmon", alpha=0.3, label="PPO Comfort Violation")
+    if ppo_comfort_vio > rule_comfort_vio + 0.05 or (df_ppo["hvac_power_kw"] < 0.1).all():
+        ax.text(0.5, 0.85, "Warning: savings achieved with reduced thermal comfort", 
+                transform=ax.transAxes, ha='center', fontsize=10, color='red',
+                bbox=dict(boxstyle='round', facecolor='#ffebee', alpha=0.8))
+                
+    # Lower ylim to make space for text
+    ax.set_ylim(0, max(final_ppo, final_rule) * 1.25)
     
-    if np.any(ppo_indoor > 27):
-        ax1.fill_between(time, 27, ppo_indoor, where=(ppo_indoor > 27), color="darkred", alpha=0.4, hatch="///")
-
-    y_min = min(21, np.min(rule_indoor), np.min(ppo_indoor)) - 0.5
-    y_max = max(30, np.max(ppo_indoor), 27) + 0.5
-    ax1.set_ylim(y_min, y_max)
-    ax1.set_yticks(np.arange(np.floor(y_min), np.ceil(y_max)+1, 1))
-
-    # Legend
-    lines = [l1, l2, l3, l4]
-    labels = [l.get_label() for l in lines]
-    comfort_patch = mpatches.Patch(color="lightblue", alpha=0.3, label="Comfort Zone 22–26°C")
-    vio_patch = mpatches.Patch(color="salmon", alpha=0.3, label="PPO Comfort Violation")
-    
-    ax1.legend(lines + [comfort_patch, vio_patch], labels + [comfort_patch.get_label(), vio_patch.get_label()], loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=3)
-
-    # Annotation
-    anno_text = (f"Violation: {pct_vio:.1f}%\n"
-                 f"Severe Overheat: {sev_hot_hours:.1f}h\n"
-                 f"Max PPO Temp: {max_ppo:.1f}°C\n"
-                 f"Avg Outdoor: {avg_out:.1f}°C\n"
-                 f"Max Outdoor: {max_out:.1f}°C\n"
-                 f"Weather: {source_val}")
-    ax1.text(1.02, 0.5, anno_text, transform=ax1.transAxes, verticalalignment='center', bbox=dict(boxstyle="round", facecolor="white", alpha=0.8))
-
-    fig.tight_layout()
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  ✓ Chart 3 (v2) → {save_path}")
+    _save(fig, os.path.join(out_dir, "research_cost_bar.png"), "Final Cost Comparison")
 
 def plot_evaluation_results(df_ppo, df_rule, save_dir=None):
+    """Main entry point for behavior-driven research visualization."""
     if save_dir is None: save_dir = "evaluate/"
     os.makedirs(save_dir, exist_ok=True)
     
-    # Core Plots
-    _plot_soc(df_ppo, df_rule, save_dir)
+    print("\n[Visualization] Generating Behavior Analysis Suite...")
     
-    import pandas as pd
-    n = min(192, len(df_ppo), len(df_rule))
-    df_combined = pd.DataFrame({
-        "time_hours": _hours(df_ppo["step"].values[:n]),
-        "ppo_indoor_temp": df_ppo["indoor_temp"].values[:n],
-        "rule_indoor_temp": df_rule["indoor_temp"].values[:n],
-        "outdoor_temp": df_ppo["outdoor_temp"].values[:n],
-        "weather_source": ["Evaluation Log"] * n
-    })
-    v2_path = os.path.join(save_dir, "chart3_temperature_tracking_v2.png")
-    plot_thermal_comfort_with_weather(df_combined, v2_path)
+    plot_hvac_behavior(df_ppo, save_dir)
+    plot_pv_flow(df_ppo, save_dir)
+    plot_battery_behavior(df_ppo, save_dir)
+    plot_grid_analysis(df_ppo, save_dir)
+    plot_reward_flow(df_ppo, save_dir)
+    plot_appliance_schedule(df_ppo, save_dir)
+    plot_cost_bar(df_ppo, df_rule, save_dir)
     
-    _plot_power_balance(df_ppo, save_dir)
-    
-    # Reward & Scores Plots (v5.0)
-    _plot_step_reward_decomposition(df_ppo, save_dir)
-    _plot_cumulative_penalty_decomposition(df_ppo, save_dir)
-    _plot_demo_score_breakdown(df_ppo, save_dir)
-    
-    # Diagnostic Plots (v4.0)
-    _plot_action_distribution(df_ppo, save_dir)
-    _plot_health_stats(df_ppo, save_dir)
+    print("[Visualization] Done. All behavior reports saved to:", save_dir)
