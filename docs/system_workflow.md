@@ -12,16 +12,20 @@ graph TD
     B -->|Rescale 1/40| C[Synthetic Env State]
     B -->|Look-ahead| D[Forecasts PV/Load/Price]
     
-    C & D --> E[SmartHomeEnv]
+    C --> E[SmartHomeEnv]
+    D --> E
+    
     E -->|Normalized Obs| F[PPO Agent]
     
-    F -->|Action [-1,1]| G[Action Wrapper]
+    F -->|Action -1,1| G[Action Wrapper]
     G -->|Physical Action kW| E
     
     E -->|Physics Update| H[RC Thermal Model]
     E -->|Physics Update| I[Battery Model]
     
-    H & I --> J[Calculate Reward]
+    H --> J[Calculate Reward]
+    I --> J
+    
     J --> K[Update PPO Policy]
 ```
 

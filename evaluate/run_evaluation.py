@@ -96,7 +96,6 @@ def run_episode(env, agent, num_steps: int = 672, seed: int = 42) -> pd.DataFram
     records = []
 
     for step in range(num_steps):
-        # Agent decision
         if hasattr(agent, "predict"):
             action, _ = agent.predict(obs, deterministic=True)
         else:
@@ -104,17 +103,27 @@ def run_episode(env, agent, num_steps: int = 672, seed: int = 42) -> pd.DataFram
 
         next_obs, reward, terminated, truncated, info = env.step(action)
 
-        # Reconstruct price from r_eco (r_eco = -(grid*dt*price)/5000)
         grid_kw     = info.get("grid_import_kw", 0.0)
-        r_eco_val   = info.get("r_eco", 0.0)
-        # price_vnd = -r_eco * 5000 / (grid_kw * 0.25) if grid_kw > 0 else estimate from net_load
         net_load    = info.get("net_load", 0.0)
+        
+        outdoor_temp = info.get("outdoor_temp")
+        if outdoor_temp is None:
+            # Fallback to unwrapped data_manager
+            # Note: _data_step has already advanced by 1 in step(), so use _data_step - 1
+            # But the user instruction says get_step_data(env.unwrapped._data_step). Let's be safe.
+            try:
+                data_step = env.unwrapped._data_step - 1
+                outdoor_temp = env.unwrapped.data_manager.get_step_data(data_step)["outdoor_temp"]
+            except Exception:
+                outdoor_temp = 25.0 + 5.0 * np.sin(step * np.pi / 48) # fallback demo weather
+                
+        physics = info.get("physics", {})
 
         records.append({
             "step":             step,
             "reward":           reward,
             "indoor_temp":      info.get("indoor_temp", float("nan")),
-            "outdoor_temp":     info.get("outdoor_temp", float("nan")),
+            "outdoor_temp":     outdoor_temp,
             "soc":              info.get("soc", float("nan")),
             "grid_import_kw":   grid_kw,
             "pv_kw":            info.get("pv_kw", 0.0),
@@ -122,16 +131,27 @@ def run_episode(env, agent, num_steps: int = 672, seed: int = 42) -> pd.DataFram
             "batt_power_kw":    info.get("batt_power_kw", 0.0),
             "net_load_kw":      net_load,
             "electricity_cost": info.get("electricity_cost", 0.0),
+            "baseline_cost":    info.get("baseline_cost", 0.0),
             "r_eco":            info.get("r_eco", 0.0),
+            "r_saving":         info.get("r_saving", 0.0),
+            "r_comfort_bonus":  info.get("r_comfort_bonus", 0.0),
             "r_comfort":        info.get("r_comfort", 0.0),
+            "r_severe":         info.get("r_severe", 0.0),
+            "r_soc_bonus":      info.get("r_soc_bonus", 0.0),
+            "r_soc":            info.get("r_soc", 0.0),
             "r_deg":            info.get("r_deg", 0.0),
             "r_peak":           info.get("r_peak", 0.0),
-            "r_arb":            info.get("r_arb", 0.0),
             "r_smooth":         info.get("r_smooth", 0.0),
-            "r_terminal":       info.get("r_terminal", 0.0),
-            # Action taken at this step (physical units)
+            "r_switch":         info.get("r_switch", 0.0),
+            "raw_reward":       info.get("raw_reward", 0.0),
+            "clipped_reward":   info.get("clipped_reward", 0.0),
+            "battery_switch":   info.get("battery_switch", 0.0),
             "action_batt":      float(action[0]),
             "action_hvac":      float(action[1]),
+            "comfort_violation":info.get("comfort_violation", 0.0),
+            "cop":              physics.get("cop", float("nan")),
+            "q_ext_leakage":    physics.get("q_ext_leakage", float("nan")),
+            "q_cool_thermal":   physics.get("q_cool_thermal", float("nan"))
         })
 
         obs = next_obs
@@ -139,7 +159,6 @@ def run_episode(env, agent, num_steps: int = 672, seed: int = 42) -> pd.DataFram
             break
 
     df = pd.DataFrame(records)
-    # Thêm cột total_cost tích lũy để tương thích với plot_metrics.py
     df["total_cost"] = df["electricity_cost"].cumsum()
     return df
 

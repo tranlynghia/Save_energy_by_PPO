@@ -11,102 +11,122 @@ import numpy as np
 REWARD_CLIP_MIN = -20.0
 REWARD_CLIP_MAX =  5.0
 
-def calculate_hems_reward(
-    env_info, 
-    action_norm, 
-    prev_action_norm, 
-    is_terminal,
-    config
-):
+def calculate_hems_reward(telemetry: dict, config: dict) -> tuple[float, dict]:
     """
-    Tính toán phần thưởng toàn diện cho HEMS.
-    
-    :param env_info:        Dict chứa các thông số vật lý (grid_import, temp, soc, v.v.)
-    :param action_norm:     Hành động hiện tại (normalized [-1, 1])
-    :param prev_action_norm: Hành động trước đó (normalized [-1, 1])
-    :param is_terminal:     Đánh dấu kết thúc episode
-    :param config:          Cấu hình trọng số
-    
-    :return: (clipped_reward, reward_breakdown)
+    Tính toán phần thưởng toàn diện cho HEMS dựa trên telemetry vật lý.
+    Bao gồm cả Bonus và Penalty để định hướng học tập.
     """
+    cost_norm = config.get("reward", {}).get("cost_normalization", 5000.0)
     
-    # --- 1. Economic Reward (r_eco) ---
-    # Chỉ tính dựa trên chi phí tiền điện thực tế
-    cost_norm = config.get("reward.cost_normalization", 5000.0)
-    electricity_cost = env_info["electricity_cost"]
-    r_eco = -(electricity_cost / cost_norm)
-
-    # --- 2. Comfort Reward (r_comfort) ---
-    # Vùng an toàn 22-26 C. Ngoài vùng này phạt Quadratic.
-    indoor_temp = env_info["indoor_temp"]
-    w_comfort = config.get("reward.weights.comfort", 1.0)
+    # 1. Chi phí điện (r_eco) và Saving (r_saving)
+    electricity_cost = telemetry.get("electricity_cost", 0.0)
+    baseline_cost = telemetry.get("baseline_cost", electricity_cost)
     
-    comfort_vio = max(0.0, 22.0 - indoor_temp, indoor_temp - 26.0)
-    r_comfort = -w_comfort * (comfort_vio ** 2)
+    r_eco = - (electricity_cost / cost_norm)
     
-    # Hard constraint violation
-    if indoor_temp > 27.0 or indoor_temp < 21.0:
-        r_comfort -= 10.0
+    w_saving = config.get("reward", {}).get("weights", {}).get("saving", 1.0)
+    saving_vnd = baseline_cost - electricity_cost
+    r_saving = w_saving * (saving_vnd / cost_norm)
 
-    # --- 3. Battery Degradation & Health (r_deg + r_soc) ---
-    batt_grid_kw = env_info["batt_grid_kw"]
-    soc = env_info["soc"]
-    w_deg = config.get("reward.weights.degradation", 0.1)
-    w_soc = config.get("reward.weights.soc_health", 2.0)
+    # 2. Comfort (r_comfort) và Comfort Bonus
+    w_comfort = config.get("reward", {}).get("weights", {}).get("comfort", 2.0)
+    comfort_violation = telemetry.get("comfort_violation", 0.0)
+    r_comfort = - w_comfort * (comfort_violation ** 2)
     
-    # Throughput penalty
-    r_deg = -w_deg * abs(batt_grid_kw)
+    comfort_in_zone_bonus = config.get("reward", {}).get("bonuses", {}).get("comfort_in_zone", 0.2)
+    r_comfort_bonus = comfort_in_zone_bonus if comfort_violation == 0 else 0.0
+
+    # 3. Severe overheating (r_severe)
+    w_severe = config.get("reward", {}).get("weights", {}).get("severe", 4.0)
+    severe_overheat = telemetry.get("severe_overheat", 0.0)
+    r_severe = - w_severe * (severe_overheat ** 2)
+
+    # 4. Peak (r_peak)
+    w_peak = config.get("reward", {}).get("weights", {}).get("peak", 0.5)
+    peak_limit_kw = config.get("reward", {}).get("peak_limit_kw", 4.0)
+    grid_import_kw = telemetry.get("grid_import_kw", 0.0)
+    r_peak = - w_peak * max(0.0, grid_import_kw - peak_limit_kw) ** 2
+
+    # 5. Battery degradation proxy (r_deg)
+    w_deg = config.get("reward", {}).get("weights", {}).get("degradation", 0.1)
+    battery_throughput_kwh = telemetry.get("battery_throughput_kwh", 0.0)
+    r_deg = - w_deg * battery_throughput_kwh
+
+    # 6. SoC health (r_soc) và SoC Bonus
+    w_soc = config.get("reward", {}).get("weights", {}).get("soc_health", 1.0)
+    soc_health_violation = telemetry.get("soc_health_violation", 0.0)
+    r_soc = - w_soc * (soc_health_violation ** 2)
     
-    # SoC Healthy Zone (30% - 80%)
-    r_soc = 0.0
-    if soc < 0.3:
-        r_soc = -w_soc * (0.3 - soc)**2
-    elif soc > 0.8:
-        r_soc = -w_soc * (soc - 0.8)**2
-
-    # --- 4. Anti-Chattering (r_switch) ---
-    # Phạt nếu đảo chiều sạc/xả liên tục
-    r_switch = 0.0
-    w_switch = config.get("reward.weights.switch", 0.5)
-    prev_batt_p = env_info.get("prev_batt_grid_kw", 0.0)
+    soc = telemetry.get("soc", 0.5)
+    healthy_soc_low = config.get("reward", {}).get("battery", {}).get("healthy_soc_low", 0.3)
+    healthy_soc_high = config.get("reward", {}).get("battery", {}).get("healthy_soc_high", 0.8)
+    soc_healthy_bonus = config.get("reward", {}).get("bonuses", {}).get("soc_healthy", 0.05)
     
-    if np.sign(prev_batt_p) != np.sign(batt_grid_kw) and abs(prev_batt_p) > 0.1 and abs(batt_grid_kw) > 0.1:
-        r_switch = -w_switch
+    r_soc_bonus = soc_healthy_bonus if healthy_soc_low <= soc <= healthy_soc_high else 0.0
 
-    # --- 5. Action Smoothness (r_smooth) ---
-    # Tính trên không gian chuẩn hóa [-1, 1]
-    w_smooth = config.get("reward.weights.smooth", 0.5)
-    r_smooth = -w_smooth * np.sum((action_norm - prev_action_norm)**2)
-
-    # --- 6. Peak Shaving (r_peak) ---
-    peak_limit = config.get("reward.peak_limit", 4.0)
-    grid_import = env_info["grid_import_kw"]
-    r_peak = -1.0 * max(0.0, grid_import - peak_limit)**2
-
-    # --- 7. Terminal SoC (r_terminal) ---
-    r_terminal = 0.0
-    if is_terminal:
-        r_terminal = -2.0 * abs(soc - 0.5)
-
-    # --- Tổng hợp ---
-    raw_reward = r_eco + r_comfort + r_deg + r_soc + r_switch + r_smooth + r_peak + r_terminal
+    # 7. Smooth action (r_smooth)
+    w_smooth = config.get("reward", {}).get("weights", {}).get("smooth", 0.05)
+    prev_action_norm = telemetry.get("prev_action_norm", np.zeros(2))
+    current_action_norm = telemetry.get("current_action_norm", np.zeros(2))
+    r_smooth = - w_smooth * np.sum((current_action_norm - prev_action_norm) ** 2)
     
-    clipped_reward = float(np.clip(raw_reward, REWARD_CLIP_MIN, REWARD_CLIP_MAX))
-    is_clipped = bool(raw_reward < REWARD_CLIP_MIN or raw_reward > REWARD_CLIP_MAX)
+    # 8. Battery switch penalty (r_switch)
+    w_switch = config.get("reward", {}).get("weights", {}).get("switch", 0.05)
+    prev_batt_grid_kw = telemetry.get("prev_batt_grid_kw", 0.0)
+    batt_grid_kw = telemetry.get("batt_grid_kw", 0.0)
+    eps = 0.1
+    
+    battery_switch = (
+        abs(prev_batt_grid_kw) > eps
+        and abs(batt_grid_kw) > eps
+        and np.sign(prev_batt_grid_kw) != np.sign(batt_grid_kw)
+    )
+    r_switch = -w_switch if battery_switch else 0.0
+
+    # 9. Export revenue (r_export) - optional, disabled by default
+    export_revenue = telemetry.get("grid_export_kw", 0.0) * config.get("environment", {}).get("dt_hours", 0.25) * 0.0
+    r_export = export_revenue / cost_norm
+
+    # Tổng hợp phần thưởng
+    raw_reward = (
+        r_comfort_bonus + r_saving + r_soc_bonus +
+        r_eco + r_comfort + r_severe + r_peak +
+        r_deg + r_soc + r_smooth + r_switch + r_export
+    )
+    
+    reward_min = config.get("reward", {}).get("reward_min", -20.0)
+    reward_max = config.get("reward", {}).get("reward_max", 5.0)
+    clipped_reward = float(np.clip(raw_reward, reward_min, reward_max))
+    is_clipped = bool(raw_reward < reward_min or raw_reward > reward_max)
 
     reward_breakdown = {
         "r_eco": r_eco,
+        "r_saving": r_saving,
+        "r_comfort_bonus": r_comfort_bonus,
         "r_comfort": r_comfort,
+        "r_severe": r_severe,
+        "r_peak": r_peak,
         "r_deg": r_deg,
         "r_soc": r_soc,
-        "r_switch": r_switch,
+        "r_soc_bonus": r_soc_bonus,
         "r_smooth": r_smooth,
-        "r_peak": r_peak,
-        "r_terminal": r_terminal,
+        "r_switch": r_switch,
+        
         "raw_reward": raw_reward,
         "clipped_reward": clipped_reward,
         "is_reward_clipped": is_clipped,
-        "comfort_violation": comfort_vio
+        
+        "electricity_cost": electricity_cost,
+        "baseline_cost": baseline_cost,
+        "saving_vnd": saving_vnd,
+        "comfort_violation": comfort_violation,
+        "severe_overheat": severe_overheat,
+        "battery_throughput_kwh": battery_throughput_kwh,
+        "soc_health_violation": soc_health_violation,
+        "grid_import_kw": grid_import_kw,
+        "soc": soc,
+        "batt_grid_kw": batt_grid_kw,
+        "battery_switch": int(battery_switch)
     }
 
     return clipped_reward, reward_breakdown

@@ -1,78 +1,68 @@
-## 🌟 Tính năng nổi bật (v4.0 Senior Refactor)
+# HEMS PPO - Smart Home Energy Management System
 
-*   **Physically Consistent Power Balance**: Tính toán công suất tại AC Bus, tách bạch hao hụt sạc/xả của Pin.
-*   **Centralized Multi-Objective Reward**: Hệ thống phần thưởng hợp nhất, chống Reward Hacking và lạm dụng thiết bị.
-*   **Battery Health Protection**: Tích hợp hình phạt cho việc xả sâu, sạc quá đầy và đảo chiều sạc/xả liên tục (Anti-chattering).
-*   **Quadratic Comfort Zone**: Duy trì nhiệt độ 22°C-26°C với hình phạt bậc hai và các ràng buộc cứng (Hard constraints).
-*   **Deep Telemetry Logging**: Ghi nhận toàn bộ các dòng nhiệt (q_ext, q_cool), COP, và trạng thái Clipping của reward.
+Dự án áp dụng Học Tăng Cường (Reinforcement Learning - PPO) để điều khiển Hệ thống Quản lý Năng lượng Thông minh (Home Energy Management System - HEMS) cho một căn nhà. 
+Mục tiêu là tối ưu hóa việc sử dụng năng lượng, cắt giảm đỉnh tải (Peak Shaving), tận dụng điện mặt trời (PV) và tiết kiệm chi phí hóa đơn điện dựa trên giá điện TOU (Time of Use) theo chuẩn thực tế của Việt Nam năm 2026, đồng thời phải đảm bảo tuyệt đối điều kiện tiện nghi nhiệt độ (Thermal Comfort) và tuổi thọ pin lưu trữ (Battery Health).
 
----
+## 🚀 Đặc điểm Nổi bật
+- **Mô hình Nhiệt động học (Thermal Model) Tiên tiến**: Sử dụng cấu trúc RC 1R1C mở rộng, có xét đến truyền nhiệt qua vỏ nhà (Envelope), bức xạ mặt trời qua kính (Solar Gain), tỏa nhiệt nội bộ (Internal Gain) và xâm nhập khí (Infiltration).
+- **Mô phỏng Pin lưu trữ (Battery ESS) Chuẩn Vật lý**: Tách bạch công suất AC-side và DC-side (Cell-side), mô phỏng giới hạn SoC động, và cơ chế tự động giảm công suất (Thermal Derating) khi nhiệt độ môi trường khắc nghiệt.
+- **Giá điện TOU Việt Nam 2026**: Tích hợp bảng giá điện sản xuất/kinh doanh dưới 6kV.
+- **Hệ thống Reward "Research-Grade"**: Không còn hiện tượng "Reward toàn âm", tích hợp các cơ chế Bonus/Penalty khắt khe giúp Agent học được chiến lược tối ưu có ý nghĩa vật lý.
+- **Evaluation Pipeline Trực quan**: Xuất file CSV chi tiết, Tensorboard monitoring thời gian thực, và 7 biểu đồ Diagnostic Plot để mổ xẻ "bệnh" của thuật toán.
 
-## 📂 Cấu trúc Reward (v4.0)
+## 📁 Cấu trúc Dự án
 
-Hàm phần thưởng tổng quát được tính toán tập trung tại `utils/reward.py`:
-
-$$Reward = r_{eco} + r_{comfort} + r_{deg} + r_{soc} + r_{smooth} + r_{switch} + r_{peak} + r_{terminal}$$
-
-*   **r_eco**: Chi phí tiền điện thực tế (không dùng r_arb để tránh hacking).
-*   **r_comfort**: Phạt bậc hai nếu $T_{in} \notin [22, 26]$. Phạt nặng nếu bão hòa nhiệt (>27°C, <21°C).
-*   **r_soc**: Ép pin hoạt động trong vùng tối ưu (30% - 80%).
-*   **r_switch**: Phạt đảo chiều sạc/xả liên tục (Chattering control).
-*   **r_smooth**: Phạt độ dốc thay đổi hành động trên không gian chuẩn hóa.
-
----
-
-## 📂 Cấu trúc thư mục
-
-```text
+```
 project/
-├── agent/                  # Thuật toán PPO và kịch bản huấn luyện
-├── env/                    # Môi trường Gymnasium (Physics & Data)
-│   ├── data/               # Quản lý và tiền xử lý dữ liệu thực tế
-│   └── physics/            # Các mô hình vật lý (Thermal, Battery)
-├── evaluate/               # Công cụ đánh giá và vẽ biểu đồ (v3.0)
-├── logs/                   # TensorBoard và Reward CSV logs
-├── models/                 # Lưu trữ các checkpoints (zip)
-└── docs/                   # Tài liệu chi tiết về thuật toán & hệ thống
+│
+├── agent/
+│   ├── train_ppo.py          # Script huấn luyện chính cho PPO Agent
+│   └── rule_based_agent.py   # Baseline Agent dựa trên tập luật (Heuristic)
+│
+├── configs/
+│   └── config.yaml           # "Single Source of Truth": Toàn bộ thông số vật lý và reward
+│
+├── env/
+│   ├── data/
+│   │   └── data_manager.py   # Xử lý dữ liệu, tạo outdoor_temp hình sin, map giá TOU
+│   ├── physics/
+│   │   ├── battery_model.py  # Phương trình Vật lý Pin (ESS)
+│   │   └── thermal_model.py  # Phương trình Vật lý Nhiệt (1R1C)
+│   ├── smart_home_env.py     # Lõi Gymnasium Environment
+│   └── wrappers.py           # Tiền xử lý Action/Observation Space (Normalization)
+│
+├── evaluate/
+│   ├── run_evaluation.py     # Script so sánh PPO vs Rule-based
+│   └── plot_metrics.py       # Vẽ các biểu đồ Diagnostics
+│
+├── utils/
+│   ├── reward.py             # Hệ thống phân rã Reward đa mục tiêu
+│   └── logger.py             # Tensorboard & CSV Callbacks
+│
+├── docs/                     # Tài liệu thiết kế toán học và hệ thống
+└── data/                     # Data CityLearn và EPW (nếu có)
 ```
 
----
+## 🧠 Cách thiết lập (Setup)
 
-## 🚀 Hướng dẫn sử dụng
+1. **Yêu cầu Hệ thống:**
+   - Python 3.9+
+   - Thư viện: `gymnasium`, `stable-baselines3`, `numpy`, `pandas`, `matplotlib`, `pyyaml`.
 
-### 1. Huấn luyện Agent
-Sử dụng PPO với cấu hình Advanced (Entropy=0.05, Gamma=0.995):
-```powershell
-python agent/train_ppo.py
-```
-*Theo dõi tiến trình qua TensorBoard:* `tensorboard --logdir logs/`
+2. **Cách chạy Huấn luyện (Training):**
+   Mở terminal tại thư mục `project/` và chạy:
+   ```bash
+   python agent/train_ppo.py
+   ```
+   *Tip: Có thể mở Tensorboard để theo dõi quá trình cày điểm: `tensorboard --logdir logs/`*
 
-### 2. Đánh giá & So sánh
-So sánh PPO Agent với Rule-based Baseline trên tập dữ liệu kiểm thử:
-```powershell
-python evaluate/run_evaluation.py
-```
+3. **Cách chạy Đánh giá (Evaluation):**
+   Sau khi đã train xong (có file `models/ppo_hems_final.zip`), chạy:
+   ```bash
+   python evaluate/run_evaluation.py
+   ```
+   Kết quả sẽ sinh ra các file CSV và biểu đồ đồ thị so sánh trong thư mục `evaluate/`.
 
----
-
-## 📊 Hệ thống biểu đồ phân tích
-
-Sau khi chạy evaluation, hệ thống tự động xuất 7 biểu đồ tại thư mục `evaluate/`:
-1.  **SoC Profile**: Theo dõi trạng thái pin trong 7 ngày.
-2.  **Cost Comparison**: So sánh tổng chi phí (VND) giữa PPO và Baseline.
-3.  **Thermal Tracking**: Độ bám đuổi vùng thoải mái (22°C-26°C).
-4.  **Power Balance**: Phân tách nguồn cung (PV, Grid, Battery) theo thời gian.
-5.  **Action vs Price**: Minh chứng chiến lược sạc/xả theo biến động giá điện.
-6.  **Appliance Schedule**: Biểu đồ Gantt hoạt động của HVAC và Pin.
-7.  **Reward Breakdown**: Phân rã các thành phần r_eco, r_comfort, r_arb, r_deg.
-
----
-
-## 🔬 Thông số kỹ thuật chính
-
-| Thông số | Giá trị | Ý nghĩa |
-| --- | --- | --- |
-| **Observation** | 20 dims | Bao gồm dự báo giá (Price Forecast) |
-| **Action** | 2 dims (Cont) | P_battery [-5, 5]kW, P_hvac [0, 4]kW |
-| **Normalization** | VecNormalize | Chuẩn hóa Reward & Obs online |
-| **Scaling** | 1/40 Factor | Chuyển dữ liệu Building → Smart Home |
+## 📜 Tài liệu Chi tiết
+Vui lòng đọc kỹ tài liệu trong thư mục `docs/` để hiểu cách hệ thống vận hành bên dưới:
+- `docs/PHYSICS_AND_ENVIRONMENT.md`: Các công thức nhiệt động học, suy hao dung lượng pin, tính toán điện năng, thiết lập phần thưởng (Reward/Penalty) và cơ chế nội suy Baseline Rule-based.
