@@ -1,27 +1,28 @@
 environment:
   timestep_minutes: 15
-  max_power_kw: 7.0
+  max_power_kw: 160.0          # Tòa nhà: tải đỉnh ~200kW, giới hạn 160kW để ép peak shaving
   target_temp: 25.0
+  max_steps_per_episode: 96
 
 physics:
-  pv_capacity_kw: 5.0          # Công suất đỉnh hệ thống PV (kW)
+  pv_capacity_kw: 200.0         # Tòa nhà văn phòng: ~200kWp PV
   thermal:
-    thermal_resistance: 2.0    # R: K/W
-    thermal_capacitance: 5.0   # C: kWh/K
-    hvac_efficiency: 2.5       # Hệ số COP định mức
+    thermal_resistance: 0.05    # Tòa nhà lớn: R thấp hơn (truyền nhiệt nhanh qua diện tích lớn)
+    thermal_capacitance: 200.0  # Tòa nhà lớn: C cao hơn (khối tích lớn, quán tính nhiệt cao)
+    hvac_efficiency: 2.5
     # --- Phase 4: Advanced Thermal ---
-    window_area_m2: 6.0        # Tổng diện tích cửa kính (m²)
-    shgc: 0.25                 # Solar Heat Gain Coefficient (cửa low-e)
-    occupancy_heat_kw: 0.1     # Nhiệt tỏa ra mỗi người (kW/người)
-    cop_degradation_k: 0.03    # Hệ số suy giảm COP theo ΔT
-    cop_t_ref: 10.0            # ΔT tham chiếu cho COP phi tuyến (°C)
+    window_area_m2: 240.0       # Tòa nhà văn phòng: diện tích kính lớn
+    shgc: 0.25
+    occupancy_heat_kw: 0.1
+    cop_degradation_k: 0.03
+    cop_t_ref: 10.0
 
   battery:
-    capacity_kwh: 10.0
+    capacity_kwh: 400.0         # BESS quy mô tòa nhà
     charge_efficiency: 0.95
     discharge_efficiency: 0.95
-    max_charge_power_kw: 3.0
-    max_discharge_power_kw: 3.0
+    max_charge_power_kw: 120.0
+    max_discharge_power_kw: 120.0
     min_soc: 0.1
     max_soc: 1.0
 
@@ -41,15 +42,15 @@ pricing:
 
 reward:
   w_eco: 1.0
-  w_peak: 2.0
-  w_comfort: 10.0
-  w_task: 10.0
+  w_peak: 2.0                  # Giảm từ 5.0 -> 2.0 (vẫn đủ để áp lực nhưng không đè bẹp cost)
+  w_comfort: 2.0               # Giảm mạnh từ 25.0 -> 2.0 để cân bằng với cost đã normalize
+  w_task: 2.0                  # Giảm từ 15.0 -> 2.0
 
 stochastic:
   use_real_citylearn_data: true
   sensor_noise_sigma: 0.2
   degradation_weights:
-    alpha: 0.5   # Phạt hao mòn do dòng điện sạc/xả lớn
+    alpha: 2.0   # Tăng từ 0.5 -> 2.0 (phạt mạnh việc sạc/xả cường độ cao)
     beta: 1.0    # Phạt hao mòn do căng SOC (neo ở 50%)
 
 training:
