@@ -15,11 +15,11 @@ build/
 # ============================================================
 # Virtual Environment
 # ============================================================
-.env
-.venv
+# .env
+# .venv
 # env/  <- Bỏ comment này vì project có thư mục env/ chứa code
-venv/
-ENV/
+# venv/
+# ENV/
 
 # ============================================================
 # Jupyter Notebook
